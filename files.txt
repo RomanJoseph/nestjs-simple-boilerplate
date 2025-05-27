@@ -1,0 +1,2156 @@
+Arquivo: src/infra/env/envConfig.ts
+Conteúdo:
+import * as dotenv from 'dotenv';
+dotenv.config();
+
+export const envConfig = {
+  database: {
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    username: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_DATABASE,
+  },
+  jwt: {
+    secret: process.env.JWT_SECRET,
+    expires_in: process.env.JWT_EXPIRES_IN,
+  },
+  coreApi: {
+    url: process.env.CORE_API_URL,
+  },
+  asaas: {
+    apiUrl: process.env.ASAAS_API_URL,
+    apiKey: process.env.ASAAS_API_KEY,
+  },
+};
+
+---
+
+Arquivo: src/infra/nestjs/app.module.ts
+Conteúdo:
+import { Module } from '@nestjs/common';
+import { AuthModule } from 'src/modules/auth/auth.module';
+import { UserModule } from 'src/modules/users/users.module';
+
+@Module({
+  imports: [UserModule, AuthModule],
+  controllers: [],
+  providers: [],
+})
+export class AppModule {}
+
+---
+
+Arquivo: src/infra/database/database.module.ts
+Conteúdo:
+import { Module } from '@nestjs/common';
+import { databaseProviders } from './typeorm/database.provider';
+
+@Module({
+  providers: [...databaseProviders],
+  exports: [...databaseProviders],
+})
+export class DatabaseModule {}
+
+---
+
+Arquivo: src/infra/database/typeorm/primary.repository.ts
+Conteúdo:
+import { Injectable, Inject } from '@nestjs/common';
+import {
+  Repository,
+  DataSource,
+  EntityTarget,
+  FindOptionsWhere,
+  In,
+} from 'typeorm';
+import { PrimaryEntity } from './primary.entity';
+
+@Injectable()
+export class PrimaryRepository<T extends PrimaryEntity> extends Repository<T> {
+  private readonly entityName: string;
+
+  constructor(
+    dataSource: DataSource,
+    private readonly entity: EntityTarget<T>,
+  ) {
+    super(entity, dataSource.createEntityManager());
+    this.entityName =
+      entity instanceof Function ? entity.name : entity.toString();
+  }
+  public async findById(id: string): Promise<T | null> {
+    return this.findOne({
+      where: { id } as FindOptionsWhere<T> | FindOptionsWhere<T>[] | undefined,
+    });
+  }
+
+  public async findInIds(ids: string[]): Promise<T[]> {
+    return this.find({
+      where: {
+        id: In(ids),
+      } as FindOptionsWhere<T> | FindOptionsWhere<T>[] | undefined,
+    });
+  }
+}
+
+---
+
+Arquivo: src/infra/database/typeorm/primary.entity.ts
+Conteúdo:
+import {
+  PrimaryGeneratedColumn,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
+
+export abstract class PrimaryEntity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @CreateDateColumn({ name: 'created_at' })
+  created_at: Date;
+
+  @UpdateDateColumn({ name: 'updated_at' })
+  updated_at: Date;
+}
+
+---
+
+Arquivo: src/infra/database/typeorm/database.provider.ts
+Conteúdo:
+import * as dotenv from 'dotenv';
+import { envConfig } from 'src/infra/env/envConfig';
+import { DataSource, DataSourceOptions } from 'typeorm';
+
+const envPath =
+  process.env.NODE_ENV === 'production'
+    ? '.env'
+    : `.env.${process.env.NODE_ENV}`;
+dotenv.config({ path: envPath });
+
+const postgresConfig: DataSourceOptions = {
+  type: 'postgres',
+  host: envConfig.database.host,
+  port: +(envConfig.database.port ?? 5432),
+  username: envConfig.database.username,
+  password: envConfig.database.password,
+  database: envConfig.database.database,
+  logging: false,
+  entities: [__dirname + '/../../../**/*.entity{.ts,.js}'],
+  synchronize: true,
+};
+
+export const databaseProviders = [
+  {
+    provide: 'DATA_SOURCE_SQL',
+    useFactory: async () => {
+      const dataSource = new DataSource(postgresConfig);
+
+      return dataSource.initialize();
+    },
+  },
+];
+
+---
+
+Arquivo: src/infra/adapters/asaas/auth/AxiosAuthenticatedInstanceFactory.ts
+Conteúdo:
+import axios, { AxiosInstance } from 'axios';
+
+import { validateAsaasError } from '../errors/validateAsaasError';
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class AxiosAuthenticatedInstanceFactory {
+  public generateAuthenticatedAxiosInstance(): AxiosInstance {
+    const instance = axios.create({
+      baseURL: process.env.API_ASAAS_URL,
+      headers: {
+        Accept: 'application/json',
+        access_token: process.env.API_ASAAS_KEY,
+      },
+    });
+
+    instance.interceptors.response.use(
+      (response) => {
+        validateAsaasError(response.data);
+        return response;
+      },
+      (error) => {
+        if (error.response) {
+          validateAsaasError(error.response.data);
+        }
+        return Promise.reject(error);
+      },
+    );
+
+    return instance;
+  }
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/errors/validateAsaasError.ts
+Conteúdo:
+import { InternalServerErrorException } from '@nestjs/common';
+
+export const validateAsaasError = (err: any): void => {
+  if (err.type === 'error')
+    throw new InternalServerErrorException(
+      'Erro ao se comunicar com o Asaas: ' + err,
+    );
+};
+
+---
+
+Arquivo: src/infra/adapters/asaas/subscriptions/dto/IAsaasSubscriptionDTO.ts
+Conteúdo:
+export interface IAsaasSubscriptionDTO {
+  id?: string;
+  customer: string;
+  billingType: 'BOLETO' | 'CREDIT_CARD' | 'PIX';
+  value: number;
+  nextDueDate: Date;
+  fine?: {
+    value: number;
+    once: boolean;
+  };
+  cycle: 'MONTHLY' | 'YEARLY';
+  description?: string;
+  creditCard?: {
+    holderName: string;
+    number: string;
+    expiryMonth: string;
+    expiryYear: string;
+    ccv: string;
+  };
+  creditCardToken?: string;
+  status?: string;
+  endDate?: string;
+  maxPayments?: number;
+  externalReference?: string;
+
+  // UPDATE
+  updatePendingPayments?: boolean;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/subscriptions/response/IGetAsaasSubscriptionResponseDTO.ts
+Conteúdo:
+export interface IGetAsaasSubscriptionResponseDTO {
+  object: string;
+  hasMore: boolean;
+  totalCount: number;
+  limit: number;
+  offset: number;
+  data: Daum[];
+}
+
+interface Daum {
+  object: string;
+  id: string;
+  dateCreated: Date;
+  customer: string;
+  paymentLink: string;
+  billingType:
+    | 'BOLETO'
+    | 'CREDIT_CARD'
+    | 'DEBIT_CARD'
+    | 'TRANSFER'
+    | 'DEPOSIT'
+    | 'PIX';
+  cycle:
+    | 'WEEKLY'
+    | 'BIWEEKLY'
+    | 'MONTHLY'
+    | 'BIMONTHLY'
+    | 'QUARTERLY'
+    | 'SEMIANNUALLY'
+    | 'YEARLY';
+  value: number;
+  nextDueDate: Date;
+  endDate?: Date;
+  description: string;
+  status: 'ACTIVE' | 'EXPIRED' | 'INACTIVE';
+  discount?: {
+    value: number;
+    dueDateLimitDays: number;
+    type: 'FIXED' | 'PERCENTAGE';
+  };
+  fine?: {
+    value: number;
+  };
+  interest?: {
+    value: number;
+  };
+  deleted: boolean;
+  maxPayments?: number;
+  externalReference?: string;
+  split?: Array<{
+    walletId: string;
+    fixedValue?: number;
+    percentualValue?: number;
+    externalReference?: string;
+    description?: string;
+    status: 'ACTIVE' | 'DISABLED';
+    disabledReason?: 'WALLET_UNABLE_TO_RECEIVE' | 'VALUE_DIVERGENCE';
+  }>;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/subscriptions/response/ICreateAsaasSubscriptionResponseDTO.ts
+Conteúdo:
+export interface ICreateAsaasSubscriptionResponseDTO {
+  object: string;
+  id: string;
+  dateCreated: Date;
+  customer: string;
+  paymentLink: string;
+  billingType:
+    | 'BOLETO'
+    | 'CREDIT_CARD'
+    | 'DEBIT_CARD'
+    | 'TRANSFER'
+    | 'DEPOSIT'
+    | 'PIX';
+  cycle:
+    | 'WEEKLY'
+    | 'BIWEEKLY'
+    | 'MONTHLY'
+    | 'BIMONTHLY'
+    | 'QUARTERLY'
+    | 'SEMIANNUALLY'
+    | 'YEARLY';
+  value: number;
+  nextDueDate: Date;
+  endDate?: Date;
+  description: string;
+  status: 'ACTIVE' | 'EXPIRED' | 'INACTIVE';
+  discount?: {
+    value: number;
+    dueDateLimitDays: number;
+    type: 'FIXED' | 'PERCENTAGE';
+  };
+  fine?: {
+    value: number;
+  };
+  interest?: {
+    value: number;
+  };
+  deleted: boolean;
+  maxPayments?: number;
+  externalReference?: string;
+  split?: Array<{
+    walletId: string;
+    fixedValue?: number;
+    percentualValue?: number;
+    externalReference?: string;
+    description?: string;
+    status: 'ACTIVE' | 'DISABLED';
+    disabledReason?: 'WALLET_UNABLE_TO_RECEIVE' | 'VALUE_DIVERGENCE';
+  }>;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/subscriptions/AsaasSubscriptionProvider.ts
+Conteúdo:
+import { AxiosInstance } from 'axios';
+
+import { AxiosAuthenticatedInstanceFactory } from '../auth/AxiosAuthenticatedInstanceFactory';
+import { IAsaasSubscriptionDTO } from './dto/IAsaasSubscriptionDTO';
+import { IGetAsaasSubscriptionResponseDTO } from './response/IGetAsaasSubscriptionResponseDTO';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+
+@Injectable()
+export class AsaasSubscriptionProvider {
+  private readonly axiosInstance: AxiosInstance;
+
+  constructor(
+    private readonly axiosAuthenticatedInstanceFactory: AxiosAuthenticatedInstanceFactory,
+  ) {
+    this.axiosInstance =
+      this.axiosAuthenticatedInstanceFactory.generateAuthenticatedAxiosInstance();
+  }
+
+  public async getSubscriptions({
+    offset = 0,
+    limit = 100,
+    customer,
+    customerGroupName,
+    billingType,
+    status,
+    deletedOnly,
+    includeDeleted,
+    externalReference,
+    order,
+    sort,
+  }: {
+    offset?: number;
+    limit?: number;
+    customer?: string;
+    customerGroupName?: string;
+    billingType?: string;
+    status?: string;
+    deletedOnly?: string;
+    includeDeleted?: string;
+    externalReference?: string;
+    order?: string;
+    sort?: string;
+  }): Promise<IGetAsaasSubscriptionResponseDTO> {
+    const params = new URLSearchParams();
+
+    if (offset) params.append('offset', offset.toString());
+    if (limit) params.append('limit', limit.toString());
+    if (customer) params.append('customer', customer);
+    if (customerGroupName)
+      params.append('customerGroupName', customerGroupName);
+    if (billingType) params.append('billingType', billingType);
+    if (status) params.append('status', status);
+    if (deletedOnly) params.append('deletedOnly', deletedOnly);
+    if (includeDeleted) params.append('includeDeleted', includeDeleted);
+    if (externalReference)
+      params.append('externalReference', externalReference);
+    if (order) params.append('order', order);
+    if (sort) params.append('sort', sort);
+
+    const res = await this.axiosInstance.get<IGetAsaasSubscriptionResponseDTO>(
+      `/subscriptions?${params.toString()}`,
+    );
+
+    return res.data;
+  }
+
+  public async createSubscription({
+    customer,
+    billingType,
+    value,
+    nextDueDate,
+    cycle,
+    creditCard,
+    creditCardToken,
+    description = undefined,
+    endDate = undefined,
+    maxPayments = undefined,
+    externalReference = undefined,
+  }: IAsaasSubscriptionDTO): Promise<IAsaasSubscriptionDTO> {
+    const res = await this.axiosInstance.post<IAsaasSubscriptionDTO>(
+      `/subscriptions`,
+      {
+        customer,
+        billingType,
+        value,
+        nextDueDate,
+        cycle,
+        creditCard,
+        creditCardToken,
+        description,
+        endDate,
+        maxPayments,
+        externalReference,
+      },
+    );
+
+    return res.data;
+  }
+
+  public async deleteSubscription(id: string): Promise<{
+    deleted: boolean;
+    id: string;
+  }> {
+    try {
+      const res = await this.axiosInstance.delete(`/subscriptions/${id}`);
+      return res.data;
+    } catch (err) {
+      throw new ServiceUnavailableException(err);
+    }
+  }
+
+  public async updateSubscription(
+    id,
+    {
+      customer = undefined,
+      billingType = undefined,
+      value = undefined,
+      nextDueDate = undefined,
+      cycle = undefined,
+      description = undefined,
+      endDate = undefined,
+      maxPayments = undefined,
+      externalReference = undefined,
+      updatePendingPayments = undefined,
+    }: Partial<IAsaasSubscriptionDTO>,
+  ): Promise<IAsaasSubscriptionDTO> {
+    const res = await this.axiosInstance.put<IAsaasSubscriptionDTO>(
+      `/subscriptions/${id}`,
+      {
+        customer,
+        billingType,
+        value,
+        nextDueDate,
+        cycle,
+        description,
+        endDate,
+        maxPayments,
+        externalReference,
+        updatePendingPayments,
+      },
+    );
+
+    return res.data;
+  }
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/customers/dto/IAsaasCreditCardDTO.ts
+Conteúdo:
+export interface IAsaasCreditCardDTO {
+  holder_name: string;
+  number: string;
+  expiry_month: string;
+  expiry_year: string;
+  ccv: string;
+}
+
+export interface IAsaasCreditCardHolderInfoDTO {
+  name: string;
+  email: string;
+  cpf_cnpj: string;
+  postal_code: string;
+  address_number: string;
+  address_complement: string;
+  phone: string;
+  mobile_phone: string;
+}
+
+export interface ICreateAsaasCreditCardDTO {
+  customer: string;
+  credit_card: IAsaasCreditCardDTO;
+  credit_card_holder_info: IAsaasCreditCardHolderInfoDTO;
+  remote_ip: string;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/customers/dto/IAsaasCustomerDTO.ts
+Conteúdo:
+export interface IAsaasCustomerDTO {
+  id?: string;
+  name: string;
+  cpfCnpj?: string;
+  email?: string;
+  phone?: string;
+  mobilePhone?: string;
+  foreignCustomer?: boolean;
+  company?: string;
+  groupName?: string;
+  observations?: string;
+  stateInscription?: string;
+  municipalInscription?: string;
+  additionalEmails?: string;
+  externalReference?: string;
+  postalCode?: string;
+  notificationDisabled?: boolean;
+  province?: string;
+  complement?: string;
+  addressNumber?: string;
+  address?: string;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/customers/AsaasCustomerProvider.ts
+Conteúdo:
+import { AxiosInstance } from 'axios';
+
+import { AxiosAuthenticatedInstanceFactory } from '../auth/AxiosAuthenticatedInstanceFactory';
+import { ICreateAsaasCreditCardDTO } from './dto/IAsaasCreditCardDTO';
+import { IAsaasCustomerDTO } from './dto/IAsaasCustomerDTO';
+import { ICreateCreditCardTokenResponse } from './response/ICreateCreditCardTokenResponse';
+import { IGetAsaasCostumerResponseDTO } from './response/IGetAsaasCustomerResponseDTO';
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class AsaasCustomerProvider {
+  private readonly axiosInstance: AxiosInstance;
+
+  constructor(
+    private readonly axiosAuthenticatedInstanceFactory: AxiosAuthenticatedInstanceFactory,
+  ) {
+    this.axiosInstance =
+      this.axiosAuthenticatedInstanceFactory.generateAuthenticatedAxiosInstance();
+  }
+
+  public async getCustomers({
+    offset = 0,
+    limit = 100,
+    name,
+    email,
+    cpfCnpj,
+    groupName,
+    externalReference,
+  }: {
+    offset?: number;
+    limit?: number;
+    name?: string;
+    email?: string;
+    cpfCnpj?: string;
+    groupName?: string;
+    externalReference?: string;
+  }): Promise<IGetAsaasCostumerResponseDTO> {
+    const params = new URLSearchParams();
+
+    if (offset) params.append('offset', offset.toString());
+    if (limit) params.append('limit', limit.toString());
+    if (name) params.append('name', name);
+    if (email) params.append('email', email);
+    if (cpfCnpj) params.append('cpfCnpj', cpfCnpj);
+    if (groupName) params.append('groupName', groupName);
+    if (externalReference)
+      params.append('externalReference', externalReference);
+
+    const res = await this.axiosInstance.get<IGetAsaasCostumerResponseDTO>(
+      `/customers?${params.toString()}`,
+    );
+
+    return res.data;
+  }
+
+  public async getCustomer(id: string): Promise<IAsaasCustomerDTO> {
+    const res = await this.axiosInstance.get<IAsaasCustomerDTO>(
+      `/customers/${id}`,
+    );
+
+    return res.data;
+  }
+
+  public async createCustomer({
+    name,
+    cpfCnpj = undefined,
+    email = undefined,
+    phone = undefined,
+    mobilePhone = undefined,
+    address = undefined,
+    addressNumber = undefined,
+    complement = undefined,
+    province = undefined,
+    postalCode = undefined,
+    externalReference = undefined,
+    notificationDisabled = undefined,
+    additionalEmails = undefined,
+    municipalInscription = undefined,
+    stateInscription = undefined,
+    observations = undefined,
+    groupName = undefined,
+    company = undefined,
+    foreignCustomer = undefined,
+  }: IAsaasCustomerDTO): Promise<IAsaasCustomerDTO> {
+    const res = await this.axiosInstance.post<IAsaasCustomerDTO>(`/customers`, {
+      name,
+      cpfCnpj,
+      email,
+      phone,
+      mobilePhone,
+      address,
+      addressNumber,
+      complement,
+      province,
+      postalCode,
+      externalReference,
+      notificationDisabled,
+      additionalEmails,
+      municipalInscription,
+      stateInscription,
+      observations,
+      groupName,
+      company,
+      foreignCustomer,
+    });
+
+    return res.data;
+  }
+
+  public async updateCustomer(
+    id: string,
+    {
+      name = undefined,
+      cpfCnpj = undefined,
+      email = undefined,
+      phone = undefined,
+      mobilePhone = undefined,
+      address = undefined,
+      addressNumber = undefined,
+      complement = undefined,
+      province = undefined,
+      postalCode = undefined,
+      externalReference = undefined,
+      notificationDisabled = undefined,
+      additionalEmails = undefined,
+      municipalInscription = undefined,
+      stateInscription = undefined,
+      observations = undefined,
+      groupName = undefined,
+      company = undefined,
+      foreignCustomer = undefined,
+    }: Partial<IAsaasCustomerDTO>,
+  ): Promise<IGetAsaasCostumerResponseDTO> {
+    const res = await this.axiosInstance.put(`/customers/${id}`, {
+      name,
+      cpfCnpj,
+      email,
+      phone,
+      mobilePhone,
+      address,
+      addressNumber,
+      complement,
+      province,
+      postalCode,
+      externalReference,
+      notificationDisabled,
+      additionalEmails,
+      municipalInscription,
+      stateInscription,
+      observations,
+      groupName,
+      company,
+      foreignCustomer,
+    });
+
+    return res.data;
+  }
+
+  public async deleteCustomer(
+    id: string,
+  ): Promise<{ deleted: boolean; id: string }> {
+    const res = await this.axiosInstance.delete(`/customers/${id}`);
+
+    return res.data;
+  }
+
+  public async generateCreditCardToken(
+    data: ICreateAsaasCreditCardDTO,
+  ): Promise<ICreateCreditCardTokenResponse> {
+    const res = await this.axiosInstance.post(
+      `/creditCard/tokenizeCreditCard`,
+      {
+        customer: data.customer,
+        creditCard: {
+          holderName: data.credit_card.holder_name,
+          number: data.credit_card.number,
+          expiryMonth: data.credit_card.expiry_month,
+          expiryYear: data.credit_card.expiry_year,
+          ccv: data.credit_card.ccv,
+        },
+        creditCardHolderInfo: {
+          ...data.credit_card_holder_info,
+          holderName: data.credit_card_holder_info.name,
+          cpfCnpj: data.credit_card_holder_info.cpf_cnpj,
+          postalCode: data.credit_card_holder_info.postal_code,
+          addressNumber: data.credit_card_holder_info.address_number,
+          addressComplement: data.credit_card_holder_info.address_complement,
+          phone: data.credit_card_holder_info.phone,
+          mobilePhone: data.credit_card_holder_info.mobile_phone,
+        },
+        remoteIp: data.remote_ip,
+      },
+    );
+
+    return res.data;
+  }
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/customers/response/IGetAsaasCustomerResponseDTO.ts
+Conteúdo:
+export interface IGetAsaasCostumerResponseDTO {
+  object: string;
+  hasMore: boolean;
+  totalCount: number;
+  limit: number;
+  offset: number;
+  data: Daum[];
+}
+
+interface Daum {
+  object: string;
+  id: string;
+  dateCreated: string;
+  name: string;
+  email: string | null;
+  company: string | null;
+  phone: string | null;
+  mobilePhone: string | null;
+  address: string | null;
+  addressNumber: string | null;
+  complement: string | null;
+  province: string | null;
+  postalCode: string | null;
+  cpfCnpj: string | null;
+  personType: string | null;
+  deleted: boolean;
+  additionalEmails: string | null;
+  externalReference: string | null;
+  notificationDisabled: boolean;
+  observations: string | null;
+  municipalInscription: string | null;
+  stateInscription: string | null;
+  canDelete: boolean;
+  cannotBeDeletedReason: string | null;
+  canEdit: boolean;
+  cannotEditReason: string | null;
+  city: string | null;
+  cityName: string | null;
+  state: string | null;
+  country: string;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/customers/response/ICreateAsaasCustomerResponseDTO.ts
+Conteúdo:
+export interface ICreateAsaasCustomerResponseDTO {
+  object: string;
+  id: string;
+  dateCreated: string;
+  name: string;
+  email: string | null;
+  company: string | null;
+  phone: string | null;
+  mobilePhone: string | null;
+  address: string | null;
+  addressNumber: string | null;
+  complement: string | null;
+  province: string | null;
+  postalCode: string | null;
+  cpfCnpj: string | null;
+  personType: string | null;
+  deleted: boolean;
+  additionalEmails: string | null;
+  externalReference: string | null;
+  notificationDisabled: boolean;
+  observations: string | null;
+  municipalInscription: string | null;
+  stateInscription: string | null;
+  canDelete: boolean;
+  cannotBeDeletedReason: string | null;
+  canEdit: boolean;
+  cannotEditReason: string | null;
+  city: string | null;
+  cityName: string | null;
+  state: string | null;
+  country: string;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/customers/response/ICreateCreditCardTokenResponse.ts
+Conteúdo:
+export interface ICreateCreditCardTokenResponse {
+  creditCardNumber: string;
+  creditCardBrand:
+    | 'VISA'
+    | 'MASTERCARD'
+    | 'ELO'
+    | 'DINERS'
+    | 'DISCOVER'
+    | 'AMEX'
+    | 'HIPERCARD'
+    | 'CABAL'
+    | 'BANESCARD'
+    | 'CREDZ'
+    | 'SOROCRED'
+    | 'CREDSYSTEM'
+    | 'JCB'
+    | 'UNKNOWN';
+  creditCardToken: string;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/payments/dto/IGetAsaasPaymentsDTO.ts
+Conteúdo:
+export interface IAsaasPaymentDTO {
+  object?: string;
+  id?: string;
+  dateCreated?: Date;
+  customer: string;
+  subscription?: string;
+  installment?: string;
+  paymentLink?: string;
+  value: number;
+  netValue?: number;
+  originalValue?: number;
+  interestValue?: number;
+  description?: string;
+  paymentType:
+    | 'UNDEFINED'
+    | 'BOLETO'
+    | 'CREDIT_CARD'
+    | 'DEBIT_CARD'
+    | 'TRANSFER'
+    | 'DEPOSIT'
+    | 'PIX';
+  creditCard?: {
+    creditCardNumber?: string;
+    creditCardBrand?:
+      | 'VISA'
+      | 'MASTERCARD'
+      | 'ELO'
+      | 'DINERS'
+      | 'DISCOVER'
+      | 'AMEX'
+      | 'HIPERCARD'
+      | 'CABAL'
+      | 'BANESCARD'
+      | 'CREDZ'
+      | 'SOROCRED'
+      | 'CREDSYSTEM'
+      | 'JCB'
+      | 'UNKNOWN';
+    creditCardToken?: string;
+  };
+  canBePaidAfterDueDate?: boolean;
+  pixTransaction?: string;
+  pixQrCodeId?: string;
+  status?:
+    | 'PENDING'
+    | 'RECEIVED'
+    | 'CONFIRMED'
+    | 'OVERDUE'
+    | 'REFUNDED'
+    | 'RECEIVED_IN_CASH'
+    | 'REFUND_REQUESTED'
+    | 'REFUND_IN_PROGRESS'
+    | 'CHARGEBACK_REQUESTED'
+    | 'CHARGEBACK_DISPUTE'
+    | 'AWAITING_CHARGEBACK_REVERSAL'
+    | 'DUNNING_REQUESTED'
+    | 'DUNNING_RECEIVED'
+    | 'AWAITING_RISK_ANALYSIS';
+  dueDate: Date;
+  originalDueDate?: Date;
+  paymentDate?: Date;
+  clientPaymentDate?: Date;
+  installmentNumber?: number;
+  invoiceUrl?: string;
+  invoiceNumber?: string;
+  externalReference?: string;
+  deleted?: boolean;
+  anticipated?: boolean;
+  anticipable?: boolean;
+  creditDate?: Date;
+  estimatedCreditDate?: Date;
+  transactionReceiptUrl?: string;
+  nossoNumero?: string;
+  bankSlipUrl?: string;
+  discount?: {
+    value?: number;
+    dueDateLimitDays?: number;
+    type?: 'FIXED' | 'PERCENTAGE';
+  };
+  fine?: {
+    value?: number;
+  };
+  interest?: {
+    value?: number;
+  };
+  split?: Array<{
+    objectId?: string;
+    walletId?: string;
+    fixedValue?: number;
+    percentualValue?: number;
+    totalValue?: number;
+    cancellationReason?:
+      | 'PAYMENT_DELETED'
+      | 'PAYMENT_OVERDUE'
+      | 'PAYMENT_RECEIVED_IN_CASH'
+      | 'PAYMENT_REFUNDED'
+      | 'VALUE_DIVERGENCE_BLOCK'
+      | 'WALLET_UNABLE_TO_RECEIVE';
+    status?:
+      | 'PENDING'
+      | 'AWAITING_CREDIT'
+      | 'CANCELLED'
+      | 'DONE'
+      | 'REFUNDED'
+      | 'BLOCKED_BY_VALUE_DIVERGENCE';
+    externalReference?: string;
+    description?: string;
+  }>;
+  postalService?: boolean;
+  daysAfterDueDateToRegistrationCancellation?: number;
+  chargeback?: {
+    id?: string;
+    payment?: string;
+    installment?: string;
+    customerAccount?: string;
+    status?: 'REQUESTED' | 'IN_DISPUTE' | 'DISPUTE_LOST' | 'REVERSED' | 'DONE';
+    reason?:
+      | 'ABSENCE_OF_PRINT'
+      | 'ABSENT_CARD_FRAUD'
+      | 'CARD_ACTIVATED_PHONE_TRANSACTION'
+      | 'CARD_FRAUD'
+      | 'CARD_RECOVERY_BULLETIN'
+      | 'COMMERCIAL_DISAGREEMENT'
+      | 'COPY_NOT_RECEIVED'
+      | 'CREDIT_OR_DEBIT_PRESENTATION_ERROR'
+      | 'DIFFERENT_PAY_METHOD'
+      | 'FRAUD'
+      | 'INCORRECT_TRANSACTION_VALUE'
+      | 'INVALID_CURRENCY'
+      | 'INVALID_DATA'
+      | 'LATE_PRESENTATION'
+      | 'LOCAL_REGULATORY_OR_LEGAL_DISPUTE'
+      | 'MULTIPLE_ROCS'
+      | 'ORIGINAL_CREDIT_TRANSACTION_NOT_ACCEPTED'
+      | 'OTHER_ABSENT_CARD_FRAUD'
+      | 'PROCESS_ERROR'
+      | 'RECEIVED_COPY_ILLEGIBLE_OR_INCOMPLETE'
+      | 'RECURRENCE_CANCELED'
+      | 'REQUIRED_AUTHORIZATION_NOT_GRANTED'
+      | 'RIGHT_OF_FULL_RECOURSE_FOR_FRAUD'
+      | 'SALE_CANCELED'
+      | 'SERVICE_DISAGREEMENT_OR_DEFECTIVE_PRODUCT'
+      | 'SERVICE_NOT_RECEIVED'
+      | 'SPLIT_SALE'
+      | 'TRANSFERS_OF_DIVERSE_RESPONSIBILITIES'
+      | 'UNQUALIFIED_CAR_RENTAL_DEBIT'
+      | 'USA_CARDHOLDER_DISPUTE'
+      | 'VISA_FRAUD_MONITORING_PROGRAM'
+      | 'WARNING_BULLETIN_FILE';
+    disputeStartDate?: Date;
+    value?: number;
+    paymentDate?: Date;
+    creditCard?: object;
+    disputeStatus?: 'REQUESTED' | 'ACCEPTED' | 'REJECTED';
+    deadlineToSendDisputeDocuments?: Date;
+  };
+  refunds?: Array<{
+    dateCreated?: Date;
+    status?:
+      | 'PENDING'
+      | 'AWAITING_CRITICAL_ACTION_AUTHORIZATION'
+      | 'AWAITING_CUSTOMER_EXTERNAL_AUTHORIZATION'
+      | 'CANCELLED'
+      | 'DONE';
+    value?: number;
+    endToEndIdentifier?: string;
+    description?: string;
+    effectiveDate?: Date;
+    transactionReceiptUrl?: string;
+    refundedSplits?: Array<{
+      id?: string;
+      value?: number;
+      done?: boolean;
+    }>;
+  }>;
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/payments/AsaasPaymentProvider.ts
+Conteúdo:
+import { AxiosInstance } from 'axios';
+
+import { AxiosAuthenticatedInstanceFactory } from '../auth/AxiosAuthenticatedInstanceFactory';
+import { IAsaasPaymentDTO } from './dto/IGetAsaasPaymentsDTO';
+import { IGetAsaasPaymentResponseDTO } from './response/IGetAsaasPaymentResponseDTO';
+import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class AsaasPaymentProvider {
+  private readonly axiosInstance: AxiosInstance;
+
+  constructor(
+    private readonly axiosAuthenticatedInstanceFactory: AxiosAuthenticatedInstanceFactory,
+  ) {
+    this.axiosInstance =
+      this.axiosAuthenticatedInstanceFactory.generateAuthenticatedAxiosInstance();
+  }
+  public async getPayments({
+    offset = 0,
+    limit = 100,
+    installment = undefined,
+    customer = undefined,
+    customerGroupName = undefined,
+    billingType = undefined,
+    status = undefined,
+    subscription = undefined,
+    paymentDate = undefined,
+    invoiceStatus = undefined,
+    estimatedCreditDate = undefined,
+    pixQrCodeId = undefined,
+    anticipated = undefined,
+    anticipable = undefined,
+    dateCreated_ge = undefined,
+    dateCreated_le = undefined,
+    paymentDate_ge = undefined,
+    paymentDate_le = undefined,
+    estimatedCreditDate_ge = undefined,
+    estimatedCreditDate_le = undefined,
+    dueDate_ge = undefined,
+    dueDate_le = undefined,
+    user = undefined,
+    externalReference = undefined,
+  }: {
+    installment?: string;
+    offset?: number;
+    limit?: number;
+    customer?: string;
+    customerGroupName?: string;
+    billingType?: string;
+    status?: string;
+    subscription?: string;
+    externalReference?: string;
+    paymentDate?: string;
+    invoiceStatus?: string;
+    estimatedCreditDate?: string;
+    pixQrCodeId?: string;
+    anticipated?: boolean;
+    anticipable?: boolean;
+    dateCreated_ge?: string;
+    dateCreated_le?: string;
+    paymentDate_ge?: string;
+    paymentDate_le?: string;
+    estimatedCreditDate_ge?: string;
+    estimatedCreditDate_le?: string;
+    dueDate_ge?: string;
+    dueDate_le?: string;
+    user?: string;
+  }): Promise<IGetAsaasPaymentResponseDTO> {
+    const params = new URLSearchParams();
+    const appendParam = (
+      key: string,
+      value?: string | boolean | number,
+    ): void => {
+      if (value !== undefined) {
+        params.append(key, value.toString());
+      }
+    };
+
+    appendParam('installment', installment);
+    appendParam('offset', offset);
+    appendParam('limit', limit);
+    appendParam('customer', customer);
+    appendParam('customerGroupName', customerGroupName);
+    appendParam('billingType', billingType);
+    appendParam('status', status);
+    appendParam('subscription', subscription);
+    appendParam('externalReference', externalReference);
+    appendParam('paymentDate', paymentDate);
+    appendParam('invoiceStatus', invoiceStatus);
+    appendParam('estimatedCreditDate', estimatedCreditDate);
+    appendParam('pixQrCodeId', pixQrCodeId);
+    appendParam('anticipated', anticipated);
+    appendParam('anticipable', anticipable);
+    appendParam('dateCreated[ge]', dateCreated_ge);
+    appendParam('dateCreated[le]', dateCreated_le);
+    appendParam('paymentDate[ge]', paymentDate_ge);
+    appendParam('paymentDate[le]', paymentDate_le);
+    appendParam('estimatedCreditDate[ge]', estimatedCreditDate_ge);
+    appendParam('estimatedCreditDate[le]', estimatedCreditDate_le);
+    appendParam('dueDate[ge]', dueDate_ge);
+    appendParam('dueDate[le]', dueDate_le);
+    appendParam('user', user);
+
+    const res = await this.axiosInstance.get<IGetAsaasPaymentResponseDTO>(
+      `/payments?${params}`,
+    );
+
+    return res.data;
+  }
+
+  public async createPayment(data: {
+    customer: string;
+    billingType: 'BOLETO' | 'CREDIT_CARD' | 'PIX';
+    value: number;
+    dueDate: Date;
+    description?: string;
+    externalReference?: string;
+    installmentCount?: number;
+    totalValue?: number;
+    installmentValue?: number;
+    remoteIp: string;
+  }): Promise<IAsaasPaymentDTO> {
+    const res = await this.axiosInstance.post<IAsaasPaymentDTO>(
+      `/payments`,
+      data,
+    );
+
+    return res.data;
+  }
+}
+
+---
+
+Arquivo: src/infra/adapters/asaas/payments/response/IGetAsaasPaymentResponseDTO.ts
+Conteúdo:
+import { IAsaasPaymentDTO } from '../dto/IGetAsaasPaymentsDTO';
+
+export interface IGetAsaasPaymentResponseDTO {
+  object: string;
+  hasMore: boolean;
+  totalCount: number;
+  limit: number;
+  offset: number;
+  data: IAsaasPaymentDTO[];
+}
+
+---
+
+Arquivo: src/infra/adapters/coreApi/requests/IRegisterUserCoreApiServiceRequest.ts
+Conteúdo:
+export interface Empresa {
+  razao: 'ALTERAR AQUI';
+  fantasia: string;
+  cnpj: string;
+  tipo: 'J';
+  id_indicacao: -1;
+}
+
+export interface Filial {
+  tipo: 'F';
+  matriz: 'S';
+  cnpj: string;
+  razao: 'ALTERAR AQUI';
+  fantasia: string;
+  contato: string;
+  cep: '01001000';
+  endereco: 'ALTERAR AQUI';
+  numero: '0001';
+  cidade: 'ALTERAR AQUI';
+  uf: 'SP';
+  fone: string;
+  celular: string;
+  email: string;
+  latitude: '0.000000';
+  longitude: '0.000000';
+}
+
+export interface IRegisterUserCoreApiServiceRequest {
+  empresa: Empresa;
+  filial: Filial;
+  situacao: 'L';
+  administrador: 'S';
+  tipo_usuario: 'A';
+  sexo: 'M';
+  dt_nascimento: '1900-01-01';
+  tipo_documento: 1;
+  cpf_cnpj: string;
+  nome: string;
+  email: string;
+  senha: string;
+}
+
+---
+
+Arquivo: src/infra/adapters/coreApi/coreApi.service.ts
+Conteúdo:
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { AxiosInstance } from 'axios';
+import * as axios from 'axios';
+import { envConfig } from 'src/infra/env/envConfig';
+import { IRegisterUserCoreApiServiceRequest } from './requests/IRegisterUserCoreApiServiceRequest';
+
+@Injectable()
+export class CoreApiService {
+  private readonly baseUrl: string;
+
+  constructor() {
+    this.baseUrl = envConfig.coreApi.url!;
+  }
+
+  private getAxiosInstance(): AxiosInstance {
+    return axios.default.create({
+      baseURL: this.baseUrl,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+
+  public async registerUser(data: {
+    company_name: string;
+    phone_number: string;
+    cnpj: string;
+    password: string;
+    email: string;
+    name: string;
+  }): Promise<any> {
+    const path = 'app/external_register.php';
+
+    const axiosInstance = this.getAxiosInstance();
+
+    const request: IRegisterUserCoreApiServiceRequest = {
+      empresa: {
+        razao: 'ALTERAR AQUI',
+        fantasia: data.company_name,
+        cnpj: data.cnpj,
+        tipo: 'J',
+        id_indicacao: -1,
+      },
+      filial: {
+        tipo: 'F',
+        matriz: 'S',
+        cnpj: data.cnpj,
+        razao: 'ALTERAR AQUI',
+        fantasia: data.company_name,
+        contato: data.name,
+        cep: '01001000',
+        endereco: 'ALTERAR AQUI',
+        numero: '0001',
+        cidade: 'ALTERAR AQUI',
+        uf: 'SP',
+        fone: data.phone_number,
+        celular: data.phone_number,
+        email: data.email,
+        latitude: '0.000000',
+        longitude: '0.000000',
+      },
+      situacao: 'L',
+      administrador: 'S',
+      tipo_usuario: 'A',
+      sexo: 'M',
+      dt_nascimento: '1900-01-01',
+      tipo_documento: 1,
+      cpf_cnpj: data.cnpj,
+      nome: data.name,
+      email: data.email,
+      senha: data.password,
+    };
+
+    const response = await axiosInstance.post(path, request);
+    return response.data;
+  }
+}
+
+---
+
+Arquivo: src/infra/adapters/jwt/jwt.service.ts
+Conteúdo:
+import { Injectable } from '@nestjs/common';
+import { envConfig } from '../../env/envConfig';
+import * as jwt from 'jsonwebtoken';
+
+export interface IJwtPayload {
+  id: string;
+}
+
+export interface ITokenPayload {
+  iat: number;
+  exp: number;
+  id: string;
+}
+
+@Injectable()
+export class JwtService {
+  public generateToken(payloads: IJwtPayload): string {
+    const { secret } = envConfig.jwt;
+
+    const token = jwt.sign(payloads, secret);
+
+    return token;
+  }
+
+  public verifyToken(token: string): ITokenPayload {
+    const decoded = jwt.verify(token, envConfig.jwt.secret);
+
+    return decoded as ITokenPayload;
+  }
+}
+
+---
+
+Arquivo: src/infra/adapters/hash/hash.service.ts
+Conteúdo:
+import { Injectable } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
+
+@Injectable()
+export class HashService {
+  private readonly SALT: number;
+  constructor() {
+    this.SALT = 10;
+  }
+
+  async hashPassword(password: string): Promise<string> {
+    return bcrypt.hash(password, this.SALT);
+  }
+
+  async comparePassword(
+    password: string,
+    encryptedPassword: string,
+  ): Promise<boolean> {
+    const isValid = await bcrypt.compare(password, encryptedPassword);
+    return isValid;
+  }
+}
+
+---
+
+Arquivo: src/modules/users/users.module.ts
+Conteúdo:
+import { Module } from '@nestjs/common';
+import { DatabaseModule } from 'src/infra/database/database.module';
+import UserRepository from './repositories/user.repository';
+import { CreateUserService } from './services/createUser/createUser.service';
+import { HashService } from 'src/infra/adapters/hash/hash.service';
+import { JwtService } from 'src/infra/adapters/jwt/jwt.service';
+import { AuthenticateUserService } from './services/authenticateUser/authenticateUser.service';
+import { CreateCustomerService } from '../customers/services/createCustomer/createCustomer.service';
+import { CustomersModule } from '../customers/customers.module';
+import { CoreApiService } from 'src/infra/adapters/coreApi/coreApi.service';
+
+@Module({
+  imports: [DatabaseModule, CustomersModule],
+  providers: [
+    /* Services */
+    CreateUserService,
+    AuthenticateUserService,
+    CoreApiService,
+    /* Repositories */
+    UserRepository,
+    /* Utils */
+    HashService,
+    JwtService,
+  ],
+  exports: [CreateUserService, AuthenticateUserService],
+})
+export class UserModule {}
+
+---
+
+Arquivo: src/modules/users/services/createUser/ICreateUserRequest.ts
+Conteúdo:
+export interface ICreateUserRequest {
+  name: string;
+  login: string;
+  password: string;
+  customer: {
+    name: string;
+    phone: string;
+    email: string;
+  };
+  company: {
+    name: string;
+    cnpj: string;
+  };
+}
+
+---
+
+Arquivo: src/modules/users/services/createUser/createUser.service.ts
+Conteúdo:
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ICreateUserRequest } from './ICreateUserRequest';
+import { ICreateUserResponse } from './ICreateUserResponse';
+import { HashService } from 'src/infra/adapters/hash/hash.service';
+import UserRepository from '../../repositories/user.repository';
+import { CreateCustomerService } from 'src/modules/customers/services/createCustomer/createCustomer.service';
+import { CoreApiService } from 'src/infra/adapters/coreApi/coreApi.service';
+
+@Injectable()
+export class CreateUserService {
+  constructor(
+    private readonly hashService: HashService,
+    private readonly userRepository: UserRepository,
+    private readonly createCustomerService: CreateCustomerService,
+    private readonly coreApiService: CoreApiService,
+  ) {}
+
+  public async execute(
+    command: ICreateUserRequest,
+  ): Promise<ICreateUserResponse> {
+    const user = await this.userRepository.findByLogin(command.login);
+
+    if (user) {
+      throw new ConflictException('User already exists');
+    }
+
+    const hashedPassword = await this.hashService.hashPassword(
+      command.password,
+    );
+
+    const newUser = await this.userRepository.save({
+      ...command,
+      password: hashedPassword,
+    });
+
+    const customer = await this.createCustomerService.execute({
+      company: {
+        ...command.company,
+      },
+      customer: {
+        ...command.customer,
+        user_id: newUser.id,
+      },
+    });
+
+    await this.coreApiService.registerUser({
+      company_name: command.company.name,
+      phone_number: command.customer.email,
+      cnpj: command.company.cnpj,
+      email: command.customer.email,
+      password: command.password,
+      name: command.customer.name,
+    });
+
+    return {
+      id: newUser.id,
+      login: newUser.login,
+      name: newUser.name,
+      created_at: newUser.created_at,
+      updated_at: newUser.updated_at,
+    };
+  }
+}
+
+---
+
+Arquivo: src/modules/users/services/createUser/ICreateUserResponse.ts
+Conteúdo:
+export interface ICreateUserResponse {
+  id: string;
+  name: string;
+  login: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+---
+
+Arquivo: src/modules/users/services/authenticateUser/IAuthenticateUserRequest.ts
+Conteúdo:
+export interface IAuthenticateUserRequest {
+  login: string;
+  password: string;
+}
+
+---
+
+Arquivo: src/modules/users/services/authenticateUser/IAuthenticateUserResponse.ts
+Conteúdo:
+import { User } from '../../entities/user.entity';
+
+export interface IAuthenticateUserResponse {
+  token: string;
+  user: User;
+}
+
+---
+
+Arquivo: src/modules/users/services/authenticateUser/authenticateUser.service.ts
+Conteúdo:
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import UserRepository from '../../repositories/user.repository';
+import { HashService } from 'src/infra/adapters/hash/hash.service';
+import { JwtService } from 'src/infra/adapters/jwt/jwt.service';
+import { IAuthenticateUserRequest } from './IAuthenticateUserRequest';
+import { IAuthenticateUserResponse } from './IAuthenticateUserResponse';
+
+@Injectable()
+export class AuthenticateUserService {
+  constructor(
+    private readonly userRepository: UserRepository,
+    private readonly hashService: HashService,
+    private readonly jwtService: JwtService,
+  ) {}
+
+  public async execute(
+    data: IAuthenticateUserRequest,
+  ): Promise<IAuthenticateUserResponse> {
+    const user = await this.userRepository.findByLogin(data.login);
+
+    if (!user) {
+      throw new UnauthorizedException('User or password are incorrect !');
+    }
+
+    const isPasswordValid = await this.hashService.comparePassword(
+      data.password,
+      user.password,
+    );
+
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('User or password are incorrect !');
+    }
+
+    const token = this.jwtService.generateToken({
+      id: user.id,
+    });
+
+    return {
+      token,
+      user,
+    };
+  }
+}
+
+---
+
+Arquivo: src/modules/users/entities/user.entity.ts
+Conteúdo:
+import { Exclude } from 'class-transformer';
+import { PrimaryEntity } from 'src/infra/database/typeorm/primary.entity';
+import { Column, Entity } from 'typeorm';
+
+@Entity('users')
+export class User extends PrimaryEntity {
+  @Column({ name: 'login' })
+  login: string;
+
+  @Exclude()
+  @Column({ name: 'password' })
+  password: string;
+
+  @Column({ name: 'name' })
+  name: string;
+}
+
+---
+
+Arquivo: src/modules/users/repositories/user.repository.ts
+Conteúdo:
+import { DataSource } from 'typeorm';
+import { Inject, Injectable } from '@nestjs/common';
+import { PrimaryRepository } from 'src/infra/database/typeorm/primary.repository';
+import { User } from '../entities/user.entity';
+
+@Injectable()
+class UserRepository extends PrimaryRepository<User> {
+  constructor(@Inject('DATA_SOURCE_SQL') dataSource: DataSource) {
+    super(dataSource, User);
+  }
+
+  public async findByLogin(login: string): Promise<User | null> {
+    return this.findOne({
+      where: { login },
+    });
+  }
+}
+
+export default UserRepository;
+
+---
+
+Arquivo: src/modules/auth/auth.module.ts
+Conteúdo:
+import { Module } from '@nestjs/common';
+import { UserModule } from '../users/users.module';
+import { AuthController } from './controllers/AuthController';
+import { JwtAuthGuard } from './guard/jwtAuth.guard';
+import { JwtService } from 'src/infra/adapters/jwt/jwt.service';
+
+@Module({
+  imports: [UserModule],
+  controllers: [AuthController],
+  providers: [JwtAuthGuard, JwtService],
+})
+export class AuthModule {}
+
+---
+
+Arquivo: src/modules/auth/guard/jwtAuth.guard.ts
+Conteúdo:
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { JwtService, ITokenPayload } from 'src/infra/adapters/jwt/jwt.service';
+
+@Injectable()
+export class JwtAuthGuard implements CanActivate {
+  constructor(private readonly jwtService: JwtService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const req = context.switchToHttp().getRequest();
+    const auth = req.headers['authorization'];
+    if (!auth) {
+      throw new UnauthorizedException('Token não fornecido');
+    }
+
+    const [type, token] = auth.split(' ');
+    if (type !== 'Bearer' || !token) {
+      throw new UnauthorizedException('Formato de token inválido');
+    }
+
+    try {
+      const payload = this.jwtService.verifyToken(token) as ITokenPayload;
+      req.user = { id: payload.id };
+      return true;
+    } catch (err) {
+      throw new UnauthorizedException('Token inválido ou expirado');
+    }
+  }
+}
+
+---
+
+Arquivo: src/modules/auth/controllers/request/ILoginUserRequest.ts
+Conteúdo:
+import { ApiProperty } from '@nestjs/swagger';
+import { IsString } from 'class-validator';
+
+export class ILoginUserRequest {
+  @ApiProperty({ example: 'joao123', description: 'Login do usuário' })
+  @IsString()
+  login: string;
+
+  @ApiProperty({ example: 'senhaSecreta', description: 'Senha do usuário' })
+  @IsString()
+  password: string;
+}
+
+---
+
+Arquivo: src/modules/auth/controllers/request/IRegisterUserRequest.ts
+Conteúdo:
+import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsString,
+  MinLength,
+  ValidateNested,
+  IsEmail,
+  Length,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+class CustomerDto {
+  @ApiProperty({ example: 'Maria Oliveira', description: 'Nome do cliente' })
+  @IsString()
+  @MinLength(3)
+  name: string;
+
+  @ApiProperty({
+    example: '(11) 91234-5678',
+    description: 'Telefone do cliente',
+  })
+  @IsString()
+  @MinLength(8)
+  phone: string;
+
+  @ApiProperty({
+    example: 'cliente@email.com',
+    description: 'Email do cliente',
+  })
+  @IsEmail()
+  email: string;
+}
+
+class CompanyDto {
+  @ApiProperty({
+    example: 'Minha Empresa LTDA',
+    description: 'Nome da empresa',
+  })
+  @IsString()
+  @MinLength(3)
+  name: string;
+
+  @ApiProperty({
+    example: '12345678000195',
+    description: 'CNPJ da empresa (somente números)',
+  })
+  @IsString()
+  @Length(14, 14, { message: 'O CNPJ deve conter exatamente 14 dígitos' })
+  cnpj: string;
+}
+
+export class IRegisterUserRequest {
+  @ApiProperty({ example: 'joao123', description: 'Login único do usuário' })
+  @IsString()
+  @MinLength(4)
+  login: string;
+
+  @ApiProperty({ example: 'senhaSecreta', description: 'Senha do usuário' })
+  @IsString()
+  @MinLength(6)
+  password: string;
+
+  @ApiProperty({
+    example: 'João Silva',
+    description: 'Nome completo do usuário',
+  })
+  @IsString()
+  @MinLength(3)
+  name: string;
+
+  @ApiProperty({ type: CustomerDto })
+  @ValidateNested()
+  @Type(() => CustomerDto)
+  customer: CustomerDto;
+
+  @ApiProperty({ type: CompanyDto })
+  @ValidateNested()
+  @Type(() => CompanyDto)
+  company: CompanyDto;
+}
+
+---
+
+Arquivo: src/modules/auth/controllers/AuthController.ts
+Conteúdo:
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+} from '@nestjs/common';
+import { CreateUserService } from 'src/modules/users/services/createUser/createUser.service';
+import { IRegisterUserRequest } from './request/IRegisterUserRequest';
+import { IRegisterUserResponse } from './response/IRegisterUserResponse';
+import { AuthenticateUserService } from 'src/modules/users/services/authenticateUser/authenticateUser.service';
+import { ILoginUserResponse } from './response/ILoginUserResponse';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ILoginUserRequest } from './request/ILoginUserRequest';
+import { Auth } from 'src/shared/decorators/auth.decorator';
+
+@ApiTags('Auth')
+@Controller('auth')
+export class AuthController {
+  constructor(
+    private readonly createUserService: CreateUserService,
+    private readonly authenticateUserService: AuthenticateUserService,
+  ) {}
+
+  @Post('register')
+  @ApiOperation({ summary: 'Registra um novo usuário' })
+  @ApiResponse({
+    status: 201,
+    description: 'Usuário criado com sucesso.',
+    type: IRegisterUserResponse,
+  })
+  async register(
+    @Body() dto: IRegisterUserRequest,
+  ): Promise<IRegisterUserResponse> {
+    return this.createUserService.execute(dto);
+  }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('login')
+  @ApiOperation({ summary: 'Autentica um usuário e retorna um token JWT' })
+  @ApiResponse({
+    status: 200,
+    description: 'Autenticação bem-sucedida.',
+    type: ILoginUserResponse,
+  })
+  async login(@Body() dto: ILoginUserRequest): Promise<ILoginUserResponse> {
+    return this.authenticateUserService.execute(dto);
+  }
+
+  @Get('validate')
+  @Auth()
+  @ApiOperation({
+    summary: 'Valida o token JWT e retorna o payload do usuário',
+  })
+  @ApiResponse({ status: 200, description: 'Token válido' })
+  validateToken(@Req() req: any) {
+    return {
+      valid: true,
+      user: req.user,
+    };
+  }
+}
+
+---
+
+Arquivo: src/modules/auth/controllers/response/ILoginUserResponse.ts
+Conteúdo:
+import { User } from 'src/modules/users/entities/user.entity';
+
+export class ILoginUserResponse {
+  token: string;
+  user: {
+    id: string;
+    login: string;
+    name: string;
+    created_at: Date;
+    updated_at: Date;
+  };
+}
+
+---
+
+Arquivo: src/modules/auth/controllers/response/IRegisterUserResponse.ts
+Conteúdo:
+export class IRegisterUserResponse {
+  id: string;
+  login: string;
+  name: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+---
+
+Arquivo: src/modules/customers/services/createCustomer/createCustomer.service.ts
+Conteúdo:
+import { ConflictException, Injectable } from '@nestjs/common';
+import CustomerRepository from '../../repositories/customer.repository';
+import { ICreateCustomerServiceRequest } from './ICreateCustomerServiceRequest';
+import { ICreateCustomerServiceResponse } from './ICreateCustomerResponse';
+import CompanyRepository from '../../repositories/company.repository';
+
+@Injectable()
+export class CreateCustomerService {
+  constructor(
+    private readonly customerRepository: CustomerRepository,
+    private readonly companyRepository: CompanyRepository,
+  ) {}
+
+  public async execute(
+    data: ICreateCustomerServiceRequest,
+  ): Promise<ICreateCustomerServiceResponse> {
+    const customer = await this.customerRepository.findByUserId(
+      data.customer.user_id,
+    );
+
+    if (customer) {
+      throw new ConflictException('Customer already exists');
+    }
+
+    const newCustomer = await this.customerRepository.save(data.customer);
+
+    const company = await this.companyRepository.save({
+      ...data.company,
+      customer_id: newCustomer.id,
+    });
+
+    return {
+      customer: newCustomer,
+      company,
+    };
+  }
+}
+
+---
+
+Arquivo: src/modules/customers/services/createCustomer/ICreateCustomerServiceRequest.ts
+Conteúdo:
+export interface ICreateCustomerServiceRequest {
+  customer: {
+    name: string;
+    email: string;
+    phone: string;
+    user_id: string;
+  };
+  company: {
+    name: string;
+    cnpj: string;
+  };
+}
+
+---
+
+Arquivo: src/modules/customers/services/createCustomer/ICreateCustomerResponse.ts
+Conteúdo:
+export interface ICreateCustomerServiceResponse {
+  customer: {
+    id: string;
+    name: string;
+    email: string;
+    user_id: string;
+    created_at: Date;
+    updated_at: Date;
+  };
+  company: {
+    id: string;
+    cnpj: string;
+    name: string;
+    customer_id: string;
+    created_at: Date;
+    updated_at: Date;
+  };
+}
+
+---
+
+Arquivo: src/modules/customers/customers.module.ts
+Conteúdo:
+import { Module } from '@nestjs/common';
+import { DatabaseModule } from 'src/infra/database/database.module';
+import { CreateCustomerService } from './services/createCustomer/createCustomer.service';
+import CustomerRepository from './repositories/customer.repository';
+import CompanyRepository from './repositories/company.repository';
+
+@Module({
+  imports: [DatabaseModule],
+  providers: [CreateCustomerService, CustomerRepository, CompanyRepository],
+  exports: [CreateCustomerService],
+})
+export class CustomersModule {}
+
+---
+
+Arquivo: src/modules/customers/entities/customer.entity.ts
+Conteúdo:
+import { PrimaryEntity } from 'src/infra/database/typeorm/primary.entity';
+import { Column, Entity } from 'typeorm';
+
+@Entity('customers')
+export class Customer extends PrimaryEntity {
+  @Column()
+  name: string;
+
+  @Column({ unique: true })
+  email: string;
+
+  @Column()
+  phone: string;
+
+  @Column()
+  user_id: string;
+}
+
+---
+
+Arquivo: src/modules/customers/entities/company.entity.ts
+Conteúdo:
+import { PrimaryEntity } from 'src/infra/database/typeorm/primary.entity';
+import { Column, Entity } from 'typeorm';
+
+@Entity('companies')
+export class Company extends PrimaryEntity {
+  @Column()
+  name: string;
+
+  @Column({ unique: true })
+  cnpj: string;
+
+  @Column()
+  customer_id: string;
+}
+
+---
+
+Arquivo: src/modules/customers/repositories/customer.repository.ts
+Conteúdo:
+import { DataSource } from 'typeorm';
+import { Inject, Injectable } from '@nestjs/common';
+import { PrimaryRepository } from 'src/infra/database/typeorm/primary.repository';
+import { Customer } from '../entities/customer.entity';
+
+@Injectable()
+class CustomerRepository extends PrimaryRepository<Customer> {
+  constructor(@Inject('DATA_SOURCE_SQL') dataSource: DataSource) {
+    super(dataSource, Customer);
+  }
+
+  public async findByUserId(user_id: string): Promise<Customer | null> {
+    return this.findOne({
+      where: {
+        user_id: user_id,
+      },
+    });
+  }
+}
+
+export default CustomerRepository;
+
+---
+
+Arquivo: src/modules/customers/repositories/company.repository.ts
+Conteúdo:
+import { DataSource } from 'typeorm';
+import { Inject, Injectable } from '@nestjs/common';
+import { PrimaryRepository } from 'src/infra/database/typeorm/primary.repository';
+import { Company } from '../entities/company.entity';
+
+@Injectable()
+class CompanyRepository extends PrimaryRepository<Company> {
+  constructor(@Inject('DATA_SOURCE_SQL') dataSource: DataSource) {
+    super(dataSource, Company);
+  }
+
+  public async findByCustomerId(customer_id: string): Promise<Company | null> {
+    return this.findOne({
+      where: {
+        customer_id,
+      },
+    });
+  }
+}
+
+export default CompanyRepository;
+
+---
+
+Arquivo: src/shared/decorators/auth.decorator.ts
+Conteúdo:
+import { applyDecorators, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth } from '@nestjs/swagger';
+import { JwtAuthGuard } from 'src/modules/auth/guard/jwtAuth.guard';
+
+export function Auth() {
+  return applyDecorators(UseGuards(JwtAuthGuard), ApiBearerAuth());
+}
+
+---
+
+Arquivo: src/app.controller.spec.ts
+Conteúdo:
+import { Test, TestingModule } from '@nestjs/testing';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+
+describe('AppController', () => {
+  let appController: AppController;
+
+  beforeEach(async () => {
+    const app: TestingModule = await Test.createTestingModule({
+      controllers: [AppController],
+      providers: [AppService],
+    }).compile();
+
+    appController = app.get<AppController>(AppController);
+  });
+
+  describe('root', () => {
+    it('should return "Hello World!"', () => {
+      expect(appController.getHello()).toBe('Hello World!');
+    });
+  });
+});
+
+---
+
+Arquivo: src/main.ts
+Conteúdo:
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './infra/nestjs/app.module';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  app.enableCors({
+    origin: '*',
+  });
+
+  const config = new DocumentBuilder()
+    .setTitle('API de Usuários')
+    .setDescription('Sistema de autenticação e gestão de usuários')
+    .setVersion('1.0')
+    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' })
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('docs', app, document);
+
+  await app.listen(process.env.PORT ?? 4000);
+}
+bootstrap();
+
+---
+

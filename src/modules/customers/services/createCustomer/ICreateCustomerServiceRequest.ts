@@ -1,11 +1,9 @@
-export interface ICreateUserRequest {
-  name: string;
-  login: string;
-  password: string;
+export interface ICreateCustomerServiceRequest {
   customer: {
     name: string;
-    phone: string;
     email: string;
+    phone: string;
+    user_id: string;
   };
   company: {
     name: string;

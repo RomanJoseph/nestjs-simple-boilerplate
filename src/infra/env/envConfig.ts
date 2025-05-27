@@ -13,4 +13,11 @@ export const envConfig = {
     secret: process.env.JWT_SECRET,
     expires_in: process.env.JWT_EXPIRES_IN,
   },
+  coreApi: {
+    url: process.env.CORE_API_URL,
+  },
+  asaas: {
+    apiUrl: process.env.ASAAS_API_URL,
+    apiKey: process.env.ASAAS_API_KEY,
+  },
 };
